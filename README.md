@@ -54,7 +54,7 @@ SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/clean-file-manager.git
+git clone https://github.com/babanomania/clean-file-manager.git
 cd clean-file-manager
 
 # Install dependencies
