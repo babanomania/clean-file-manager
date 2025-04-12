@@ -51,20 +51,12 @@ export default function Home() {
               <Link href="/signup" className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-8 py-3 rounded-md shadow-lg transition text-center">
                 Get Started Free
               </Link>
-              <Link href="https://github.com/yourusername/cleanfs" className="bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 border border-blue-600 dark:border-blue-400 font-medium px-8 py-3 rounded-md shadow-md transition text-center flex items-center justify-center">
+              <Link href="https://github.com/babanomania/clean-file-manager" className="bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 border border-blue-600 dark:border-blue-400 font-medium px-8 py-3 rounded-md shadow-md transition text-center flex items-center justify-center">
                 <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                   <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
                 </svg>
                 Star on GitHub
               </Link>
-            </div>
-            <div className="mt-8 flex items-center text-sm text-gray-500 dark:text-gray-400">
-              <div className="flex -space-x-2 mr-3">
-                <img className="w-8 h-8 rounded-full border-2 border-white dark:border-gray-800" src="https://randomuser.me/api/portraits/men/1.jpg" alt="Contributor" />
-                <img className="w-8 h-8 rounded-full border-2 border-white dark:border-gray-800" src="https://randomuser.me/api/portraits/women/2.jpg" alt="Contributor" />
-                <img className="w-8 h-8 rounded-full border-2 border-white dark:border-gray-800" src="https://randomuser.me/api/portraits/men/3.jpg" alt="Contributor" />
-              </div>
-              <span>Backed by a growing community of contributors</span>
             </div>
           </div>
           <div className="md:w-1/2 flex justify-center">
@@ -214,7 +206,7 @@ async function uploadFile(file: File) {
               </li>
             </ul>
             <div className="mt-8">
-              <Link href="https://github.com/yourusername/cleanfs" className="text-blue-600 dark:text-blue-400 hover:underline flex items-center">
+              <Link href="https://github.com/babanomania/clean-file-manager" className="text-blue-600 dark:text-blue-400 hover:underline flex items-center">
                 <span>View the source code</span>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 ml-1" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M10.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L12.586 11H5a1 1 0 110-2h7.586l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -241,7 +233,7 @@ async function uploadFile(file: File) {
               <Link href="/signup" className="bg-white text-blue-600 font-medium px-8 py-3 rounded-md shadow-md hover:shadow-lg transition whitespace-nowrap">
                 Sign Up Free
               </Link>
-              <Link href="https://github.com/yourusername/cleanfs/stargazers" className="bg-blue-600 bg-opacity-30 text-white border border-white border-opacity-30 font-medium px-8 py-3 rounded-md shadow-md hover:shadow-lg transition whitespace-nowrap">
+              <Link href="https://github.com/babanomania/clean-file-manager/stargazers" className="bg-blue-600 bg-opacity-30 text-white border border-white border-opacity-30 font-medium px-8 py-3 rounded-md shadow-md hover:shadow-lg transition whitespace-nowrap">
                 Star on GitHub
               </Link>
             </div>
@@ -259,7 +251,7 @@ async function uploadFile(file: File) {
                 CleanFS is a free, open-source file management system for individuals and teams.
               </p>
               <div className="flex space-x-4 mt-6">
-                <a href="https://github.com/yourusername/cleanfs" className="text-blue-600 dark:text-blue-400 hover:text-blue-500">
+                <a href="https://github.com/babanomania/clean-file-manager" className="text-blue-600 dark:text-blue-400 hover:text-blue-500">
                   <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
                   </svg>

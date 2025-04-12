@@ -382,18 +382,23 @@ const filesObj = {
         
         if (dirError) throw dirError;
         
-        // Create the new path
-        const parentPath = directory.storage_path.replace(`${userId}/`, '').replace(/\/[^/]+$/, '');
-        const newPath = parentPath === "/" 
-          ? `/${sanitizedName}/` 
-          : `${parentPath}${sanitizedName}/`;
+        // Extract the parent path by removing the last directory name from the path
+        const pathParts = directory.storage_path.split('/');
+        pathParts.pop(); // Remove the last empty string from trailing slash
+        pathParts.pop(); // Remove the directory name
+        const parentPathWithUserId = pathParts.join('/') + '/'; // Add trailing slash
+        
+        // Create new paths
+        const newFullPath = parentPathWithUserId + sanitizedName + '/';
+        
+        console.log(`Renaming directory in database from ${directory.storage_path} to ${newFullPath}`);
         
         // Update the directory record
         const { data, error } = await supabase
           .from('files')
           .update({
             name: sanitizedName,
-            storage_path: newPath,
+            storage_path: newFullPath,
             updated_at: new Date().toISOString()
           })
           .eq('id', directoryId)
@@ -404,6 +409,67 @@ const filesObj = {
         
         if (error) throw error;
         
+        // Get all files in this directory and subdirectories to move them in storage
+        console.log(`Finding files to move from ${directory.storage_path} to ${newFullPath}`);
+        const { data: filesToMove, error: filesQueryError } = await supabase
+          .from('files')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('is_directory', false)
+          .like('storage_path', `${directory.storage_path}%`);
+          
+        if (filesQueryError) throw filesQueryError;
+        
+        // Move files in storage bucket by copying to new location and then deleting old ones
+        if (filesToMove && filesToMove.length > 0) {
+          console.log(`Moving ${filesToMove.length} files in storage bucket`);
+          
+          for (const file of filesToMove) {
+            try {
+              // Create new path for this file
+              const newFilePath = file.storage_path.replace(directory.storage_path, newFullPath);
+              console.log(`Moving file from ${file.storage_path} to ${newFilePath}`);
+              
+              // Copy the file to the new location
+              const { data: copyData, error: copyError } = await supabase.storage
+                .from('files')
+                .copy(file.storage_path, newFilePath);
+                
+              if (copyError) {
+                console.error(`Error copying file ${file.storage_path}:`, copyError);
+                continue; // Skip to next file if copy fails
+              }
+              
+              // Update the file record in the database
+              const { error: updateError } = await supabase
+                .from('files')
+                .update({
+                  storage_path: newFilePath,
+                  directory_path: newFilePath.substring(0, newFilePath.lastIndexOf('/') + 1),
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', file.id)
+                .eq('user_id', userId);
+                
+              if (updateError) {
+                console.error(`Error updating file record ${file.id}:`, updateError);
+              }
+              
+              // Delete the old file from storage
+              const { error: deleteError } = await supabase.storage
+                .from('files')
+                .remove([file.storage_path]);
+                
+              if (deleteError) {
+                console.error(`Error deleting old file ${file.storage_path}:`, deleteError);
+              }
+            } catch (fileError) {
+              console.error(`Exception processing file during directory rename:`, fileError);
+              // Continue with next file
+            }
+          }
+        }
+        
         // Update paths of all subdirectories
         const oldPath = directory.storage_path;
         const { data: subdirs, error: subdirsError } = await supabase
@@ -411,14 +477,14 @@ const filesObj = {
           .select('*')
           .eq('user_id', userId)
           .eq('is_directory', true)
-          .like('storage_path', `${oldPath}%`);
+          .like('storage_path', `${oldPath}%`)
+          .neq('id', directory.id); // Exclude the current directory to avoid infinite recursion
         
         if (subdirsError) throw subdirsError;
         
         if (subdirs && subdirs.length > 0) {
           for (const subdir of subdirs) {
-            const newSubdirPath = subdir.storage_path.replace(oldPath, newPath);
-            const newSubdirParentPath = subdir.storage_path.replace(oldPath, newPath).replace(/\/[^/]+$/, '');
+            const newSubdirPath = subdir.storage_path.replace(oldPath, newFullPath);
             
             await supabase
               .from('files')
@@ -432,18 +498,30 @@ const filesObj = {
           }
         }
         
-        // Update directory_path for all files in this directory
-        const { error: filesError } = await supabase
+        // Update storage_path for all files in this directory and subdirectories
+        const { data: remainingFiles, error: remainingFilesError } = await supabase
           .from('files')
-          .update({
-            updated_at: new Date().toISOString()
-          })
+          .select('*')
           .eq('user_id', userId)
+          .eq('is_directory', false)
           .like('storage_path', `${oldPath}%`);
+          
+        if (remainingFilesError) throw remainingFilesError;
         
-        // Ignore error if directory_path column doesn't exist
-        if (filesError && filesError.code !== '42703') {
-          throw filesError;
+        if (remainingFiles && remainingFiles.length > 0) {
+          console.log(`Updating paths for ${remainingFiles.length} remaining files`);
+          
+          for (const file of remainingFiles) {
+            const updatedPath = file.storage_path.replace(oldPath, newFullPath);
+            await supabase
+              .from('files')
+              .update({
+                storage_path: updatedPath,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', file.id)
+              .eq('user_id', userId);
+          }
         }
         
         return data;
@@ -1275,16 +1353,23 @@ export const settings = {
 // Recursive function to delete a directory and all its contents
 async function recursiveDeleteDirectory(directory: any, userId: string, onProgress?: (status: string) => void) {
   try {
+    // Helper function to format storage path for deletion
+    const formatStoragePath = (path: string) => {
+      // For Supabase storage, we need to use the exact paths as stored in the database
+      // Do NOT remove the userId prefix as the paths in the bucket include it
+      return path;
+    };
+
     // Log the directory being processed
     console.log(`Processing directory: ${directory.name} (${directory.id}) at path: ${directory.storage_path}`);
     onProgress?.(`Processing directory: ${directory.name}`);
     
-    // Get all files in this directory
+    // Get all files in this directory and subdirectories
     const { data: files, error: filesError } = await supabase
       .from('files')
       .select('*')
       .eq('user_id', userId)
-      .eq('directory_path', directory.storage_path)
+      .like('storage_path', `${directory.storage_path}%`)
       .eq('is_directory', false);
 
     if (filesError) {
@@ -1296,21 +1381,52 @@ async function recursiveDeleteDirectory(directory: any, userId: string, onProgre
       onProgress?.(`Deleting ${files.length} files from ${directory.name}...`);
       console.log(`Found ${files.length} files to delete in directory ${directory.name}`);
       
+      // Delete any shares associated with these files
+      console.log(`Checking for shares associated with files in directory ${directory.name}`);
+      const fileIds = files.map(file => file.id);
+      
+      // Delete shares in batches to avoid potential query size limitations
+      const shareBatchSize = 100;
+      for (let i = 0; i < fileIds.length; i += shareBatchSize) {
+        const fileIdBatch = fileIds.slice(i, i + shareBatchSize);
+        console.log(`Deleting shares for batch of ${fileIdBatch.length} files`);
+        
+        const { error: shareDeleteError } = await supabase
+          .from('shares')
+          .delete()
+          .in('file_id', fileIdBatch);
+        
+        if (shareDeleteError) {
+          console.error(`Error deleting shares for files in directory ${directory.name}:`, shareDeleteError);
+          // Continue with deletion even if share deletion fails
+        }
+      }
+      
       // Create an array of storage paths to delete
       const storagePaths = files.map(file => file.storage_path);
+      
+      // Log all paths we're trying to delete for debugging
+      console.log('Storage paths to delete:', storagePaths);
       
       // Delete files from storage bucket in batches
       const batchSize = 100;
       for (let i = 0; i < storagePaths.length; i += batchSize) {
         const batch = storagePaths.slice(i, i + batchSize);
-        console.log(`Deleting batch of ${batch.length} files from storage`);
+        console.log(`Deleting batch of ${batch.length} files from storage:`, batch);
         
-        const { error: storageError } = await supabase.storage
-          .from('files')
-          .remove(batch);
-        
-        if (storageError) {
-          console.error(`Error deleting files from storage in directory ${directory.name}:`, storageError);
+        try {
+          const { error: storageError } = await supabase.storage
+            .from('files')
+            .remove(batch);
+          
+          if (storageError) {
+            console.error(`Error deleting files from storage in directory ${directory.name}:`, storageError);
+            // Continue with deletion even if storage deletion fails
+          } else {
+            console.log(`Successfully deleted ${batch.length} files from storage bucket`);
+          }
+        } catch (storageDeleteError) {
+          console.error(`Exception when deleting files from storage:`, storageDeleteError);
           // Continue with deletion even if storage deletion fails
         }
       }
@@ -1321,7 +1437,7 @@ async function recursiveDeleteDirectory(directory: any, userId: string, onProgre
         .from('files')
         .delete()
         .eq('user_id', userId)
-        .eq('directory_path', directory.storage_path)
+        .like('storage_path', `${directory.storage_path}%`)
         .eq('is_directory', false);
 
       if (deleteFilesError) {
@@ -1362,6 +1478,28 @@ async function recursiveDeleteDirectory(directory: any, userId: string, onProgre
 
     // Finally, delete the directory itself from the database
     console.log(`Deleting directory ${directory.name} (${directory.id}) from database`);
+    
+    // Try to delete the directory itself from storage bucket
+    try {
+      const directoryPath = directory.storage_path;
+      console.log(`Attempting to delete directory from storage bucket: ${directoryPath}`);
+      
+      const { error: dirStorageError } = await supabase.storage
+        .from('files')
+        .remove([directoryPath]);
+      
+      if (dirStorageError) {
+        console.error(`Error deleting directory from storage bucket: ${directoryPath}`, dirStorageError);
+        // Continue with database deletion even if storage deletion fails
+      } else {
+        console.log(`Successfully deleted directory from storage bucket: ${directoryPath}`);
+      }
+    } catch (dirDeleteError) {
+      console.error(`Exception when deleting directory from storage bucket:`, dirDeleteError);
+      // Continue with database deletion even if storage deletion fails
+    }
+    
+    // Delete the directory record from the database
     const { error: deleteError } = await supabase
       .from('files')
       .delete()
