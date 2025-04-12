@@ -331,8 +331,10 @@ const filesObj = {
     }
   },
 
-  deleteDirectory: async (directoryId: string, userId: string) => {
+  deleteDirectory: async (directoryId: string, userId: string, onProgress?: (status: string) => void) => {
     try {
+      onProgress?.('Starting directory deletion...');
+      
       // Get the directory to delete
       const { data: directory, error: dirError } = await supabase
         .from('files')
@@ -348,72 +350,16 @@ const filesObj = {
         throw new Error('Directory not found');
       }
 
-      // Get all files in this directory
-      const { data: files, error: filesError } = await supabase
-        .from('files')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('directory_path', directory.storage_path)
-        .eq('is_directory', false);
+      onProgress?.('Preparing to delete directory contents...');
+      
+      // Call the recursive function to delete the directory and all its contents
+      const result = await recursiveDeleteDirectory(directory, userId, onProgress);
 
-      if (filesError) throw filesError;
-
-      if (files && files.length > 0) {
-        // Delete all files in this directory
-        for (const file of files) {
-          // Delete from storage
-          const { error: storageError } = await supabase.storage
-            .from('files')
-            .remove([file.storage_path]);
-
-          if (storageError) {
-            // Continue with deletion even if storage deletion fails
-          }
-        }
-
-        // Delete all files in this directory from the database
-        const { error: deleteFilesError } = await supabase
-          .from('files')
-          .delete()
-          .eq('user_id', userId)
-          .eq('directory_path', directory.storage_path)
-          .eq('is_directory', false);
-
-        if (deleteFilesError) throw deleteFilesError;
-      } else {
-      }
-
-      // Get all subdirectories
-      const { data: subdirs, error: subdirsError } = await supabase
-        .from('files')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('is_directory', true)
-        .like('storage_path', `${directory.storage_path}%`);
-
-      if (subdirsError) throw subdirsError;
-
-      if (subdirs && subdirs.length > 0) {
-        // Use a for...of loop for async operations
-        for (const subdir of subdirs) {
-          // Call this function recursively using the exported object
-          await filesObj.deleteDirectory(subdir.id, userId);
-        }
-      } else if (subdirs === null) {
-      }
-
-      // Finally, delete the directory itself
-      const { error: deleteError } = await supabase
-        .from('files')
-        .delete()
-        .eq('id', directoryId)
-        .eq('user_id', userId)
-        .eq('is_directory', true);
-
-      if (deleteError) throw deleteError;
-
+      onProgress?.('Directory deletion completed successfully');
       return true;
     } catch (error) {
+      console.error('Error deleting directory:', error);
+      onProgress?.(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
       throw error;
     }
   },
@@ -682,7 +628,9 @@ const filesObj = {
               .from('files')
               .download(file.storage_path)
             
-            if (error) throw error
+            if (error) {
+              continue
+            }
             
             // Add to ZIP with relative path
             const relativePath = file.storage_path.replace(directory.storage_path, '').replace(/^\/+/, '');
@@ -1323,3 +1271,113 @@ export const settings = {
     }
   }
 };
+
+// Recursive function to delete a directory and all its contents
+async function recursiveDeleteDirectory(directory: any, userId: string, onProgress?: (status: string) => void) {
+  try {
+    // Log the directory being processed
+    console.log(`Processing directory: ${directory.name} (${directory.id}) at path: ${directory.storage_path}`);
+    onProgress?.(`Processing directory: ${directory.name}`);
+    
+    // Get all files in this directory
+    const { data: files, error: filesError } = await supabase
+      .from('files')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('directory_path', directory.storage_path)
+      .eq('is_directory', false);
+
+    if (filesError) {
+      console.error(`Error fetching files in directory ${directory.id}:`, filesError);
+      throw filesError;
+    }
+
+    if (files && files.length > 0) {
+      onProgress?.(`Deleting ${files.length} files from ${directory.name}...`);
+      console.log(`Found ${files.length} files to delete in directory ${directory.name}`);
+      
+      // Create an array of storage paths to delete
+      const storagePaths = files.map(file => file.storage_path);
+      
+      // Delete files from storage bucket in batches
+      const batchSize = 100;
+      for (let i = 0; i < storagePaths.length; i += batchSize) {
+        const batch = storagePaths.slice(i, i + batchSize);
+        console.log(`Deleting batch of ${batch.length} files from storage`);
+        
+        const { error: storageError } = await supabase.storage
+          .from('files')
+          .remove(batch);
+        
+        if (storageError) {
+          console.error(`Error deleting files from storage in directory ${directory.name}:`, storageError);
+          // Continue with deletion even if storage deletion fails
+        }
+      }
+
+      // Delete all files from the database
+      console.log(`Deleting ${files.length} files from database for directory ${directory.name}`);
+      const { error: deleteFilesError } = await supabase
+        .from('files')
+        .delete()
+        .eq('user_id', userId)
+        .eq('directory_path', directory.storage_path)
+        .eq('is_directory', false);
+
+      if (deleteFilesError) {
+        console.error(`Error deleting files from database in directory ${directory.name}:`, deleteFilesError);
+        throw deleteFilesError;
+      }
+    }
+
+    // Get all subdirectories
+    console.log(`Fetching subdirectories for ${directory.name} with path ${directory.storage_path}`);
+    const { data: subdirs, error: subdirsError } = await supabase
+      .from('files')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_directory', true)
+      .like('storage_path', `${directory.storage_path}%`)
+      .neq('id', directory.id); // Exclude the current directory to avoid infinite recursion
+
+    if (subdirsError) {
+      console.error(`Error fetching subdirectories for ${directory.name}:`, subdirsError);
+      throw subdirsError;
+    }
+
+    if (subdirs && subdirs.length > 0) {
+      // Sort subdirectories by path length in descending order to delete deepest directories first
+      subdirs.sort((a, b) => b.storage_path.length - a.storage_path.length);
+      
+      console.log(`Found ${subdirs.length} subdirectories to delete in ${directory.name}`);
+      onProgress?.(`Deleting ${subdirs.length} subdirectories from ${directory.name}...`);
+      
+      // Use a for...of loop for async operations
+      for (const subdir of subdirs) {
+        console.log(`Recursively deleting subdirectory: ${subdir.name} (${subdir.id})`);
+        // Call this function recursively
+        await recursiveDeleteDirectory(subdir, userId, onProgress);
+      }
+    }
+
+    // Finally, delete the directory itself from the database
+    console.log(`Deleting directory ${directory.name} (${directory.id}) from database`);
+    const { error: deleteError } = await supabase
+      .from('files')
+      .delete()
+      .eq('id', directory.id)
+      .eq('user_id', userId)
+      .eq('is_directory', true);
+
+    if (deleteError) {
+      console.error(`Error deleting directory ${directory.name} from database:`, deleteError);
+      throw deleteError;
+    }
+
+    console.log(`Successfully deleted directory ${directory.name} (${directory.id})`);
+    return true;
+  } catch (error) {
+    console.error(`Error in recursive directory deletion for ${directory?.name || 'unknown'}:`, error);
+    throw error;
+  }
+}

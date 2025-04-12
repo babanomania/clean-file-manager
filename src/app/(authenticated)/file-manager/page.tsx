@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useToast } from "@/hooks/use-toast"
+import { useNotification } from "@/contexts/notification-context"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -49,7 +50,6 @@ import { FileRecord, files } from "@/services/supabase"
 import { settings as supabaseSettings } from "@/services/supabase"
 import { useAuth } from "@/contexts/auth-context"
 import { useRouter } from "next/navigation"
-import { useNotification } from "@/contexts/notification-context"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -60,7 +60,7 @@ import {
 } from "@/components/ui/breadcrumb"
 
 export default function FileManagerPage() {
-  const { toast } = useToast()
+  const { toast, dismiss } = useToast()
   const { showNotification } = useNotification()
   const { user, loading } = useAuth()
   const router = useRouter()
@@ -219,8 +219,37 @@ export default function FileManagerPage() {
 
     try {
       setIsLoading(true)
-      await files.deleteDirectory(selectedDirectory.id, user.id)
+      
+      // Create a persistent notification for the deletion progress
+      const toastId = toast({
+        title: "Deleting Directory",
+        description: "Starting directory deletion...",
+        variant: "default",
+        duration: Infinity, // Make it persistent until we dismiss it
+      }).id
+      
+      // Call the Supabase service directly with progress updates
+      await files.deleteDirectory(
+        selectedDirectory.id, 
+        user.id,
+        (status) => {
+          // Update the toast with the current status
+          toast({
+            title: "Deleting Directory",
+            description: status,
+            variant: "default",
+            duration: Infinity,
+          })
+        }
+      )
+      
+      // Dismiss the progress notification
+      dismiss(toastId)
+      
+      // Refresh the file list
       await fetchFilesAndDirectories()
+      
+      // Show success notification
       showNotification(
         "Success",
         "Directory deleted successfully",
@@ -641,16 +670,6 @@ export default function FileManagerPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={handleDownloadAsZip}
-              disabled={selectedItems.length === 0}
-            >
-              <Archive className="h-4 w-4 mr-1" />
-              Download Selected
-            </Button>
-            
-            <Button
-              variant="outline"
-              size="sm"
               disabled={selectedItems.length === 0 || isLoading}
               onClick={() => {
                 if (selectedItems.length === 0) return
@@ -664,9 +683,11 @@ export default function FileManagerPage() {
               }}
             >
               <Download className="h-4 w-4 mr-1" />
-              {selectedItems.length === 1 && !selectedItems[0].is_directory 
-                ? 'Download' 
-                : 'Download as ZIP'}
+              {selectedItems.length === 0
+                ? 'Download'
+                : selectedItems.length === 1 && !selectedItems[0].is_directory 
+                  ? 'Download' 
+                  : 'Download as ZIP'}
             </Button>
           </div>
 
