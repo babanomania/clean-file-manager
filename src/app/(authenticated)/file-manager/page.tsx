@@ -1,5 +1,6 @@
 'use client'
 
+import React from 'react';
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import {
@@ -44,45 +45,29 @@ import {
   ChevronUp,
   ArrowUp
 } from "react-feather"
-import { files } from "@/services/supabase"
+import { FileRecord, files } from "@/services/supabase"
+import { settings as supabaseSettings } from "@/services/supabase"
 import { useAuth } from "@/contexts/auth-context"
 import { useRouter } from "next/navigation"
-
-// Update the type definitions to match the actual data structure
-type FileRecord = {
-  id: string
-  name: string
-  type: string
-  size: number
-  storage_path: string
-  user_id: string
-  directory_path?: string
-  created_at: string
-  updated_at: string
-  localUrl?: string
-}
-
-type DirectoryRecord = {
-  id: string
-  name: string
-  type: string
-  storage_path: string
-  user_id: string
-  path?: string
-  parent_path?: string
-  directory_path?: string
-  created_at: string
-  updated_at: string
-}
+import { useNotification } from "@/contexts/notification-context"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
 
 export default function FileManagerPage() {
   const { toast } = useToast()
+  const { showNotification } = useNotification()
   const { user, loading } = useAuth()
   const router = useRouter()
   const [fileList, setFileList] = useState<FileRecord[]>([])
-  const [directories, setDirectories] = useState<DirectoryRecord[]>([])
+  const [directories, setDirectories] = useState<FileRecord[]>([])
   const [selectedFile, setSelectedFile] = useState<FileRecord | null>(null)
-  const [selectedDirectory, setSelectedDirectory] = useState<DirectoryRecord | null>(null)
+  const [selectedDirectory, setSelectedDirectory] = useState<FileRecord | null>(null)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleteDirDialogOpen, setIsDeleteDirDialogOpen] = useState(false)
   const [isCreateDirDialogOpen, setIsCreateDirDialogOpen] = useState(false)
@@ -91,8 +76,12 @@ export default function FileManagerPage() {
   const [renameDirName, setRenameDirName] = useState("")
   const [currentPath, setCurrentPath] = useState("/")
   const [isLoading, setIsLoading] = useState(false)
-  const [selectedItems, setSelectedItems] = useState<(FileRecord | DirectoryRecord)[]>([])
+  const [selectedItems, setSelectedItems] = useState<FileRecord[]>([])
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
+  const [userPreferences, setUserPreferences] = useState({
+    compressFiles: false,
+    notifications: true
+  })
 
   useEffect(() => {
     // Redirect to login if not authenticated and not loading
@@ -104,6 +93,7 @@ export default function FileManagerPage() {
     // Only load files when user is authenticated and not in loading state
     if (user && !loading) {
       fetchFilesAndDirectories()
+      loadUserSettings()
     }
   }, [user, loading, currentPath, router])
 
@@ -122,13 +112,29 @@ export default function FileManagerPage() {
       setDirectories(directories)
     } catch (error) {
       console.error('Error fetching files and directories:', error)
-      toast({
-        title: 'Error',
-        description: 'Failed to load files and directories',
-        variant: 'destructive'
-      })
+      showNotification(
+        "Error",
+        "Failed to load files and directories",
+        "error"
+      )
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  async function loadUserSettings() {
+    if (!user) return
+    
+    try {
+      const settingsData = await supabaseSettings.getUserSettings(user.id)
+      if (settingsData) {
+        setUserPreferences({
+          compressFiles: settingsData.compressFiles || false,
+          notifications: settingsData.notifications !== undefined ? settingsData.notifications : true
+        })
+      }
+    } catch (error) {
+      console.error('Error loading user settings:', error)
     }
   }
 
@@ -157,7 +163,7 @@ export default function FileManagerPage() {
     try {
       setIsLoading(true)
       console.log('Uploading file to path:', currentPath)
-      await files.upload(file, user.id, currentPath)
+      await files.upload(file, user.id, currentPath, userPreferences.compressFiles)
       
       // Clear the input value to allow uploading the same file again
       e.target.value = ''
@@ -165,17 +171,18 @@ export default function FileManagerPage() {
       // Fetch files again to update the UI
       await fetchFilesAndDirectories()
       
-      toast({
-        title: "Success",
-        description: "File uploaded successfully",
-      })
+      showNotification(
+        "Success",
+        "File uploaded successfully",
+        "success"
+      )
     } catch (error) {
       console.error('Error uploading file:', error)
-      toast({
-        title: "Error",
-        description: "Failed to upload file. Please try again.",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Failed to upload file. Please try again.",
+        "error"
+      )
     } finally {
       setIsLoading(false)
     }
@@ -188,17 +195,18 @@ export default function FileManagerPage() {
       setIsLoading(true)
       await files.delete(selectedFile.id, user.id)
       await fetchFilesAndDirectories()
-      toast({
-        title: "Success",
-        description: "File deleted successfully",
-      })
+      showNotification(
+        "Success",
+        "File deleted successfully",
+        "success"
+      )
     } catch (error) {
       console.error('Error deleting file:', error)
-      toast({
-        title: "Error",
-        description: "Failed to delete file. Please try again.",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Failed to delete file. Please try again.",
+        "error"
+      )
     } finally {
       setIsLoading(false)
       setIsDeleteDialogOpen(false)
@@ -213,17 +221,18 @@ export default function FileManagerPage() {
       setIsLoading(true)
       await files.deleteDirectory(selectedDirectory.id, user.id)
       await fetchFilesAndDirectories()
-      toast({
-        title: "Success",
-        description: "Directory deleted successfully",
-      })
+      showNotification(
+        "Success",
+        "Directory deleted successfully",
+        "success"
+      )
     } catch (error) {
       console.error('Error deleting directory:', error)
-      toast({
-        title: "Error",
-        description: "Failed to delete directory. Please try again.",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Failed to delete directory. Please try again.",
+        "error"
+      )
     } finally {
       setIsLoading(false)
       setIsDeleteDirDialogOpen(false)
@@ -233,11 +242,11 @@ export default function FileManagerPage() {
 
   async function handleDirectoryRename() {
     if (!selectedDirectory || !user || !renameDirName.trim()) {
-      toast({
-        title: "Error",
-        description: "Directory name cannot be empty",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Directory name cannot be empty",
+        "error"
+      )
       return
     }
 
@@ -245,17 +254,18 @@ export default function FileManagerPage() {
       setIsLoading(true)
       await files.renameDirectory(selectedDirectory.id, renameDirName, user.id)
       await fetchFilesAndDirectories()
-      toast({
-        title: "Success",
-        description: "Directory renamed successfully",
-      })
+      showNotification(
+        "Success",
+        "Directory renamed successfully",
+        "success"
+      )
     } catch (error) {
       console.error('Error renaming directory:', error)
-      toast({
-        title: "Error",
-        description: "Failed to rename directory. Please try again.",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Failed to rename directory. Please try again.",
+        "error"
+      )
     } finally {
       setIsLoading(false)
       setIsRenameDirDialogOpen(false)
@@ -266,11 +276,11 @@ export default function FileManagerPage() {
 
   async function handleCreateDirectory() {
     if (!newDirName.trim() || !user) {
-      toast({
-        title: "Error",
-        description: "Directory name cannot be empty",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Directory name cannot be empty",
+        "error"
+      )
       return
     }
 
@@ -278,18 +288,19 @@ export default function FileManagerPage() {
       setIsLoading(true)
       await files.createDirectory(newDirName, user.id, currentPath)
       await fetchFilesAndDirectories()
-      toast({
-        title: "Success",
-        description: "Directory created successfully",
-      })
+      showNotification(
+        "Success",
+        "Directory created successfully",
+        "success"
+      )
       setNewDirName("")
     } catch (error) {
       console.error('Error creating directory:', error)
-      toast({
-        title: "Error",
-        description: "Failed to create directory. Please try again.",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Failed to create directory. Please try again.",
+        "error"
+      )
     } finally {
       setIsLoading(false)
       setIsCreateDirDialogOpen(false)
@@ -314,10 +325,11 @@ export default function FileManagerPage() {
         a.click();
         document.body.removeChild(a);
         
-        toast({
-          title: "Success",
-          description: "File download started",
-        });
+        showNotification(
+          "Success",
+          "File download started",
+          "success"
+        );
         return;
       }
       
@@ -333,17 +345,18 @@ export default function FileManagerPage() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
 
-      toast({
-        title: "Success",
-        description: "File download started",
-      });
+      showNotification(
+        "Success",
+        "File download started",
+        "success"
+      );
     } catch (error) {
       console.error('Error downloading file:', error);
-      toast({
-        title: "Error",
-        description: "Failed to download file. Please try again.",
-        variant: "destructive",
-      });
+      showNotification(
+        "Error",
+        "Failed to download file. Please try again.",
+        "error"
+      );
     } finally {
       setIsLoading(false);
     }
@@ -353,23 +366,23 @@ export default function FileManagerPage() {
     if (!user) return
 
     if (selectedItems.length === 0) {
-      toast({
-        title: "Error",
-        description: "Please select at least one item to download",
-        variant: "destructive",
-      })
+      showNotification(
+        "Error",
+        "Please select at least one item to download",
+        "error"
+      )
       return
     }
 
     try {
       setIsLoading(true)
       const fileIds = selectedItems
-        .filter(item => 'storage_path' in item)
-        .map(item => (item as FileRecord).id)
+        .filter(item => !item.is_directory)
+        .map(item => item.id)
       
       const directoryIds = selectedItems
-        .filter(item => !('storage_path' in item))
-        .map(item => (item as DirectoryRecord).id)
+        .filter(item => item.is_directory === true)
+        .map(item => item.id)
       
       const { blob, zipName } = await files.downloadAsZip(fileIds, directoryIds, user.id, currentPath)
       
@@ -382,24 +395,25 @@ export default function FileManagerPage() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
 
-      toast({
-        title: "Success",
-        description: "Zip download started",
-      });
+      showNotification(
+        "Success",
+        "Zip download started",
+        "success"
+      );
       setSelectedItems([]);
     } catch (error) {
       console.error('Error downloading as zip:', error);
-      toast({
-        title: "Error",
-        description: "Failed to download as zip. Please try again.",
-        variant: "destructive",
-      });
+      showNotification(
+        "Error",
+        "Failed to download as zip. Please try again.",
+        "error"
+      );
     } finally {
       setIsLoading(false);
     }
   }
 
-  function handleNavigateToDirectory(directory: DirectoryRecord) {
+  function handleNavigateToDirectory(directory: FileRecord) {
     // Use storage_path and extract the path after the userId
     const userId = user?.id || '';
     // Extract the path from storage_path (remove userId prefix)
@@ -419,30 +433,16 @@ export default function FileManagerPage() {
     setCurrentPath(newPath)
   }
 
-  function handleItemSelect(item: FileRecord | DirectoryRecord, isSelected: boolean) {
+  function handleItemSelect(item: FileRecord, isSelected: boolean) {
     if (isSelected) {
       setSelectedItems([...selectedItems, item])
     } else {
-      setSelectedItems(selectedItems.filter(i => {
-        // Check if both items are files (have storage_path) or both are directories
-        const isSameType = ('storage_path' in i && 'storage_path' in item) || 
-                          (!('storage_path' in i) && !('storage_path' in item));
-        
-        // Only compare IDs if they're the same type
-        return !isSameType || i.id !== item.id;
-      }))
+      setSelectedItems(selectedItems.filter(i => i.id !== item.id))
     }
   }
 
-  function isItemSelected(item: FileRecord | DirectoryRecord) {
-    return selectedItems.some(i => {
-      // Check if both items are files (have storage_path) or both are directories
-      const isSameType = ('storage_path' in i && 'storage_path' in item) || 
-                        (!('storage_path' in i) && !('storage_path' in item));
-      
-      // Only compare IDs if they're the same type
-      return isSameType && i.id === item.id;
-    })
+  function isItemSelected(item: FileRecord) {
+    return selectedItems.some(i => i.id === item.id)
   }
 
   function formatFileSize(bytes: number) {
@@ -453,27 +453,27 @@ export default function FileManagerPage() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
   }
 
-  function getFileIcon(fileType: string) {
-    if (fileType.includes('image')) return <Image className="h-6 w-6 text-blue-500" />
-    if (fileType.includes('pdf')) return <FileText className="h-6 w-6 text-red-500" />
-    if (fileType.includes('text')) return <FileText className="h-6 w-6 text-gray-500" />
-    if (fileType.includes('spreadsheet') || fileType.includes('excel')) return <FileText className="h-6 w-6 text-green-500" />
-    if (fileType.includes('presentation') || fileType.includes('powerpoint')) return <FileText className="h-6 w-6 text-orange-500" />
-    if (fileType.includes('zip') || fileType.includes('archive')) return <Package className="h-6 w-6 text-purple-500" />
-    if (fileType.includes('audio')) return <Music className="h-6 w-6 text-pink-500" />
-    if (fileType.includes('video')) return <Film className="h-6 w-6 text-indigo-500" />
-    return <FileIcon className="h-6 w-6 text-gray-500" />
+  function getFileIcon(fileType: string, sizeClass: string = 'h-6 w-6') {
+    if (fileType.includes('image')) return <Image className={`${sizeClass} text-blue-500`} />
+    if (fileType.includes('pdf')) return <FileText className={`${sizeClass} text-red-500`} />
+    if (fileType.includes('text')) return <FileText className={`${sizeClass} text-gray-500`} />
+    if (fileType.includes('spreadsheet') || fileType.includes('excel')) return <FileText className={`${sizeClass} text-green-500`} />
+    if (fileType.includes('presentation') || fileType.includes('powerpoint')) return <FileText className={`${sizeClass} text-orange-500`} />
+    if (fileType.includes('zip') || fileType.includes('archive')) return <Package className={`${sizeClass} text-purple-500`} />
+    if (fileType.includes('audio')) return <Music className={`${sizeClass} text-pink-500`} />
+    if (fileType.includes('video')) return <Film className={`${sizeClass} text-indigo-500`} />
+    return <FileIcon className={`${sizeClass} text-gray-500`} />
   }
 
-  const hasDirectoriesSelected = selectedItems.some(item => !('storage_path' in item))
+  const hasDirectoriesSelected = selectedItems.some(item => item.is_directory === true)
 
-  function openRenameDirectoryDialog(directory: DirectoryRecord) {
+  function openRenameDirectoryDialog(directory: FileRecord) {
     setSelectedDirectory(directory)
     setRenameDirName(directory.name)
     setIsRenameDirDialogOpen(true)
   }
 
-  function renderDirectoryActions(directory: DirectoryRecord) {
+  function renderDirectoryActions(directory: FileRecord) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -542,58 +542,57 @@ export default function FileManagerPage() {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             {/* Breadcrumb Navigation */}
-            <div className="flex items-center text-sm text-gray-500">
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                className="p-0 h-auto font-normal hover:bg-transparent hover:text-blue-600"
-                onClick={handleNavigateUp}
-                disabled={currentPath === "/"}
-              >
-                Root
-              </Button>
-              {currentPath && currentPath !== "/" && (
-                <>
-                  <span className="mx-1">/</span>
-                  {currentPath.split("/").filter(Boolean).map((part, index, array) => (
-                    <div key={index} className="flex items-center">
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
-                        className="p-0 h-auto font-normal hover:bg-transparent hover:text-blue-600"
-                        onClick={() => {
-                          const newPath = `/${array.slice(0, index + 1).join("/")}/`
-                          setCurrentPath(newPath)
-                        }}
-                      >
-                        {part}
-                      </Button>
-                      {index < array.length - 1 && <span className="mx-1">/</span>}
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
+            <Breadcrumb className="text-sm text-gray-500 dark:text-gray-400">
+              <BreadcrumbList>
+                <BreadcrumbItem>
+                  <BreadcrumbLink 
+                    href="#" 
+                    onClick={(e) => { e.preventDefault(); setCurrentPath('/'); }}
+                    className={currentPath === "/" ? "font-medium text-gray-700 dark:text-gray-300" : "hover:text-blue-600"}
+                  >
+                    Root
+                  </BreadcrumbLink>
+                </BreadcrumbItem>
+                {currentPath.split('/').filter(Boolean).map((part, index, array) => {
+                  const isLast = index === array.length - 1;
+                  const hrefPath = `/${array.slice(0, index + 1).join('/')}`;
+                  return (
+                    <React.Fragment key={index}>
+                      <BreadcrumbSeparator />
+                      <BreadcrumbItem>
+                        {isLast ? (
+                          <BreadcrumbPage className="font-medium text-gray-700 dark:text-gray-300">{part}</BreadcrumbPage>
+                        ) : (
+                          <BreadcrumbLink 
+                            href="#" 
+                            onClick={(e) => { e.preventDefault(); setCurrentPath(hrefPath); }}
+                            className="hover:text-blue-600"
+                          >
+                            {part}
+                          </BreadcrumbLink>
+                        )}
+                      </BreadcrumbItem>
+                    </React.Fragment>
+                  );
+                })}
+              </BreadcrumbList>
+            </Breadcrumb>
 
             {/* View Mode Toggle */}
             <div className="flex items-center space-x-2">
               <Button
-                variant="outline"
-                size="sm"
+                variant={viewMode === 'list' ? 'default' : 'outline'}
+                className={`w-10 h-10 p-0 ${viewMode === 'list' ? 'dark:text-primary-foreground' : ''}`}
                 onClick={() => setViewMode('list')}
-                className={viewMode === 'list' ? 'bg-blue-100' : ''}
               >
-                <List className="h-4 w-4 mr-1" />
-                List
+                <List className="h-4 w-4" />
               </Button>
               <Button
-                variant="outline"
-                size="sm"
+                variant={viewMode === 'grid' ? 'default' : 'outline'}
+                className={`w-10 h-10 p-0 ${viewMode === 'grid' ? 'dark:text-primary-foreground' : ''}`}
                 onClick={() => setViewMode('grid')}
-                className={viewMode === 'grid' ? 'bg-blue-100' : ''}
               >
-                <Grid className="h-4 w-4 mr-1" />
-                Grid
+                <Grid className="h-4 w-4" />
               </Button>
             </div>
           </div>
@@ -657,15 +656,15 @@ export default function FileManagerPage() {
                 if (selectedItems.length === 0) return
                 
                 // If only one file is selected and it's a file (not a directory)
-                if (selectedItems.length === 1 && 'storage_path' in selectedItems[0]) {
-                  handleFileDownload(selectedItems[0] as FileRecord)
+                if (selectedItems.length === 1 && !selectedItems[0].is_directory) {
+                  handleFileDownload(selectedItems[0])
                 } else {
                   handleDownloadAsZip()
                 }
               }}
             >
               <Download className="h-4 w-4 mr-1" />
-              {selectedItems.length === 1 && 'storage_path' in selectedItems[0] 
+              {selectedItems.length === 1 && !selectedItems[0].is_directory 
                 ? 'Download' 
                 : 'Download as ZIP'}
             </Button>
@@ -785,108 +784,98 @@ export default function FileManagerPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 p-4">
               {directories.map((directory) => (
                 <div 
-                  key={directory.id} 
-                  className={`cursor-pointer hover:shadow-md transition-shadow p-4 border rounded-md ${
-                    isItemSelected(directory) ? 'border-2 border-blue-500' : 'border-gray-200'
-                  }`}
+                  key={`dir-grid-${directory.id}`} 
+                  className={`flex flex-col items-center cursor-pointer hover:shadow-lg transition-shadow p-4 border rounded-lg ${
+                    isItemSelected(directory) ? 'ring-2 ring-blue-500 ring-offset-1 border-blue-500' : 'border-gray-200 dark:border-gray-700'
+                  } bg-white dark:bg-gray-800/50`}
                 >
-                  <div className="flex flex-col items-center">
-                    <div className="flex items-center justify-between w-full mb-2">
-                      <div className="flex items-center">
-                        <input
-                          type="checkbox"
-                          checked={isItemSelected(directory)}
-                          onChange={(e) => handleItemSelect(directory, e.target.checked)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="mr-2"
-                        />
-                      </div>
-                      {renderDirectoryActions(directory)}
+                  <div className="flex items-center justify-between w-full mb-3">
+                    <input
+                      type="checkbox"
+                      checked={isItemSelected(directory)}
+                      onChange={(e) => handleItemSelect(directory, e.target.checked)}
+                      onClick={(e) => e.stopPropagation()} // Prevent navigation when clicking checkbox
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    {renderDirectoryActions(directory)} 
+                  </div>
+                  <div 
+                    className="flex flex-col items-center w-full flex-grow"
+                    onClick={() => handleNavigateToDirectory(directory)}
+                  >
+                    <Folder className="h-24 w-24 text-blue-600 dark:text-blue-400 mb-4 flex-shrink-0" />
+                    <div className="font-medium text-center truncate w-full text-gray-800 dark:text-gray-200">
+                      {directory.name}
                     </div>
-                    <div 
-                      className="flex flex-col items-center w-full"
-                      onClick={() => handleNavigateToDirectory(directory)}
-                    >
-                      <Folder className="h-16 w-16 text-blue-600 mb-2" />
-                      <div className="font-medium text-center truncate w-full">
-                        {directory.name}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        {new Date(directory.updated_at).toLocaleDateString()}
-                      </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Folder
                     </div>
                   </div>
                 </div>
               ))}
               {fileList.map((file) => (
                 <div 
-                  key={file.id} 
-                  className={`hover:shadow-md transition-shadow p-4 border rounded-md ${
-                    isItemSelected(file) ? 'border-2 border-blue-500' : 'border-gray-200'
-                  }`}
+                  key={`file-grid-${file.id}`} 
+                  className={`flex flex-col items-center cursor-pointer hover:shadow-lg transition-shadow p-4 border rounded-lg ${
+                    isItemSelected(file) ? 'ring-2 ring-blue-500 ring-offset-1 border-blue-500' : 'border-gray-200 dark:border-gray-700'
+                  } bg-white dark:bg-gray-800/50`}
+                  onClick={() => handleItemSelect(file, !isItemSelected(file))} // Select on click
                 >
-                  <div className="flex flex-col items-center">
-                    <div className="flex items-center justify-between w-full mb-2">
-                      <div className="flex items-center">
-                        <input
-                          type="checkbox"
-                          checked={isItemSelected(file)}
-                          onChange={(e) => handleItemSelect(file, e.target.checked)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="mr-2"
-                        />
-                      </div>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" className="h-8 w-8 p-0">
-                            <span className="sr-only">Open menu</span>
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => handleFileDownload(file)}>
-                            <Download className="mr-2 h-4 w-4" />
-                            Download
-                          </DropdownMenuItem>
-                          <DropdownMenuItem 
-                            onClick={() => {
-                              setSelectedFile(file)
-                              setIsDeleteDialogOpen(true)
-                            }}
-                            className="text-red-600"
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                  <div className="flex items-center justify-between w-full mb-3">
+                    <input
+                      type="checkbox"
+                      checked={isItemSelected(file)}
+                      onChange={(e) => handleItemSelect(file, e.target.checked)}
+                      onClick={(e) => e.stopPropagation()} // Prevent selection toggle when clicking checkbox
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                     {/* File Actions Dropdown */}
+                     <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 p-0" onClick={(e) => e.stopPropagation()}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem 
+                          onClick={(e) => { e.stopPropagation(); handleFileDownload(file); }}
+                        >
+                          <Download className="mr-2 h-4 w-4" />
+                          Download
+                        </DropdownMenuItem>
+                        <DropdownMenuItem 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFile(file);
+                            setIsDeleteDialogOpen(true);
+                          }}
+                          className="text-red-600"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <div className="flex flex-col items-center w-full flex-grow">
+                    {getFileIcon(file.type, 'h-24 w-24 mb-4 flex-shrink-0')} 
+                    <div className="font-medium text-center truncate w-full text-gray-800 dark:text-gray-200">
+                      {file.name}
                     </div>
-                    <div 
-                      className="flex flex-col items-center w-full"
-                      onClick={() => handleFileDownload(file)}
-                    >
-                      <div className="mb-2 text-blue-600">
-                        {getFileIcon(file.type)}
-                      </div>
-                      <div className="font-medium text-center truncate w-full">
-                        {file.name}
-                      </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        {formatFileSize(file.size)}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {new Date(file.updated_at).toLocaleDateString()}
-                      </div>
+                     <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                       {formatFileSize(file.size)}
                     </div>
                   </div>
                 </div>
               ))}
+
+              {/* Empty State for Grid View */}
               {directories.length === 0 && fileList.length === 0 && (
-                <div className="col-span-full h-48 flex flex-col items-center justify-center text-gray-500">
-                  <Folder className="h-12 w-12 mb-2 text-gray-400" />
-                  <p>No files or folders found</p>
-                  <p className="text-sm">Upload files or create a new folder to get started</p>
-                </div>
+                <div className="col-span-full h-48 flex flex-col items-center justify-center text-gray-500 dark:text-gray-400">
+                   <Folder className="h-12 w-12 mb-3 text-gray-400" />
+                   <p>No files or folders found</p>
+                   <p className="text-sm">Upload files or create a new folder</p>
+                 </div>
               )}
             </div>
           )}

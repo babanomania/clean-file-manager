@@ -5,6 +5,11 @@ import JSZip from 'jszip'
 // Initialize Supabase client
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
+// Check if client creation was successful
+if (supabase) {
+} else {
+}
+
 // Types
 export interface FileRecord {
   id: string
@@ -16,19 +21,10 @@ export interface FileRecord {
   created_at: string
   updated_at: string
   directory_path?: string
+  parent_directory_id?: string
+  is_directory?: boolean
   publicUrl?: string
   localUrl?: string
-}
-
-export interface DirectoryRecord {
-  id: string
-  name: string
-  path: string
-  parent_path?: string
-  user_id: string
-  created_at: string
-  updated_at: string
-  parent_directory_id?: string
 }
 
 export interface ShareRecord {
@@ -86,535 +82,344 @@ export const auth = {
 
 // File Management
 const filesObj = {
-  upload: async (file: File, userId: string, directoryPath: string = "/") => {
-    console.log('==== UPLOAD FUNCTION START ====');
-    console.log('File:', file.name, 'Size:', file.size, 'Type:', file.type);
-    console.log('User ID:', userId);
-    console.log('Directory Path:', directoryPath);
-
-    const filePath = `${userId}/${directoryPath}/${file.name}`;
-    console.log('Final storage path:', filePath);
+  upload: async (file: File, userId: string, directoryPath: string = "/", compressFiles: boolean = false) => {
+    // Ensure directoryPath ends with a slash if it's not the root
+    const normalizedParentPath = directoryPath === '/' ? '/' : directoryPath.endsWith('/') ? directoryPath : `${directoryPath}/`;
+    // Construct the full path including the user ID prefix
+    let fullStoragePath = `${userId}${normalizedParentPath}${file.name}`;
 
     try {
       // Ensure we have an authenticated session
-      const { data: sessionData } = await supabase.auth.getSession();
-      console.log('Session check:', sessionData.session ? 'Authenticated' : 'Not authenticated');
-      
-      if (!sessionData.session) {
-        console.error('No authenticated session found');
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData.session) {
         throw new Error('Authentication required for file upload');
       }
 
-      // Try to get a signed URL for upload (this can bypass RLS in some cases)
-      try {
-        console.log('Attempting to create a signed URL for upload');
-        
-        // First, create a record in the files table
+      let uploadSuccessful = false;
+      let fileToUpload = file;
+      let fileName = file.name;
+      let fileType = file.type || getMimeType(file.name);
+      let fileSize = file.size;
+
+      // Apply compression if enabled
+      if (compressFiles) {
+        try {
+          // Import compression utility dynamically to avoid issues with SSR
+          const { compressFile } = await import('@/lib/compression');
+          fileToUpload = await compressFile(file);
+          
+          // Update file metadata for the compressed file
+          fileName = fileToUpload.name;
+          fileType = fileToUpload.type;
+          fileSize = fileToUpload.size;
+          
+          // Update storage path for the compressed file
+          fullStoragePath = `${userId}${normalizedParentPath}${fileName}`;
+        } catch (compressionError) {
+          // If compression fails, continue with the original file
+          console.error('Compression failed, using original file:', compressionError);
+        }
+      }
+
+      // Try direct upload first
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('files')
+        .upload(fullStoragePath, fileToUpload, {
+          cacheControl: '3600',
+        });
+
+      if (uploadError) {
+        throw uploadError; // Re-throw the error to be caught by the outer catch block
+      } else {
+        uploadSuccessful = true;
+      }
+
+      // If upload was successful, insert the file metadata into the database
+      if (uploadSuccessful) {
         const fileRecord = {
-          name: file.name,
-          type: file.type || getMimeType(file.name),
-          size: file.size,
-          storage_path: filePath,
+          name: fileName,
+          type: fileType,
+          size: fileSize,
+          storage_path: fullStoragePath,
           user_id: userId,
+          directory_path: normalizedParentPath,
+          is_directory: false,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         };
-        
-        console.log('File record:', fileRecord);
-        
-        // Try direct upload first
-        console.log('Attempting direct upload to bucket: files');
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('files')
-          .upload(filePath, file, {
-            cacheControl: '3600',
-            upsert: true
-          });
-          
-        if (uploadError) {
-          console.error('Direct upload failed:', uploadError);
-          console.error('Error details:', JSON.stringify(uploadError));
-          
-          // If direct upload fails, try creating a signed URL
-          console.log('Attempting to create a signed URL for upload');
-          const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-            .from('files')
-            .createSignedUploadUrl(filePath);
-            
-          if (signedUrlError) {
-            console.error('Failed to create signed URL:', signedUrlError);
-            throw signedUrlError;
-          }
-          
-          console.log('Successfully created signed URL');
-          const { signedUrl, token } = signedUrlData;
-          
-          // Upload using the signed URL
-          console.log('Uploading using signed URL');
-          const uploadResponse = await fetch(signedUrl, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': file.type,
-              'x-upsert': 'true'
-            },
-            body: file
-          });
-          
-          if (!uploadResponse.ok) {
-            console.error('Signed URL upload failed:', await uploadResponse.text());
-            throw new Error('Signed URL upload failed');
-          }
-          
-          console.log('Successfully uploaded using signed URL');
-        } else {
-          console.log('Successfully uploaded directly to bucket');
-        }
-        
-        // Store file metadata in localStorage for immediate access
-        if (typeof window !== 'undefined') {
-          console.log('Storing file metadata in localStorage');
-          const storageKey = `files_${userId}`;
-          let existingFiles = [];
-          
-          try {
-            existingFiles = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          } catch (e) {
-            console.warn('Error parsing localStorage, resetting:', e);
-          }
-          
-          const newFile = {
-            ...fileRecord,
-            id: Math.random().toString(36).substring(2, 15)
-          };
-          
-          localStorage.setItem(storageKey, JSON.stringify([...existingFiles, newFile]));
-          console.log('Updated localStorage with new file');
-          
-          // Dispatch event to update UI immediately
-          setTimeout(() => {
-            console.log('Dispatching file-uploaded event');
-            const event = new CustomEvent('file-uploaded', { detail: newFile });
-            window.dispatchEvent(event);
-          }, 0);
-        }
-      } catch (error) {
-        console.error('Upload process failed:', error);
-        throw error;
-      }
-    } catch (error) {
-      console.error('==== UPLOAD FUNCTION ERROR ====');
-      console.error('Error details:', error);
-    }
 
-    console.log('==== UPLOAD FUNCTION COMPLETE ====');
+        const { data: insertData, error: insertError } = await supabase
+          .from('files')
+          .insert(fileRecord)
+          .select(); // Select to get the inserted record back
+
+        if (insertError) {
+          throw insertError;
+        }
+
+        return insertData ? insertData[0] : null;
+      } else {
+        throw new Error('File upload failed before database insert.');
+      }
+
+    } catch (error) {
+      throw error;
+    }
   },
 
   createDirectory: async (name: string, userId: string, parentPath: string = "/") => {
-    console.log('==== CREATE DIRECTORY START ====');
-    console.log('Directory Name:', name);
-    console.log('User ID:', userId);
-    console.log('Parent Path:', parentPath);
-    
+    // Normalize parent path: ensure it starts and ends with '/', except for root '/'
+    let normalizedParentPath = '/';
+    if (parentPath && parentPath !== '/') {
+        normalizedParentPath = parentPath.startsWith('/') ? parentPath : `/${parentPath}`;
+        normalizedParentPath = normalizedParentPath.endsWith('/') ? normalizedParentPath : `${normalizedParentPath}/`;
+    }
+
+    // Construct the full path for the new directory
+    const newDirectoryPath = `${normalizedParentPath}${name}/`;
+
     try {
-      // Create a clean storage path
-      const storagePath = parentPath === "/" 
-        ? `${userId}/${name}/` 
-        : `${userId}${parentPath}${name}/`;
-      
-      console.log('Storage path for directory:', storagePath);
-      
-      // Skip database insert entirely and use localStorage only
-      if (typeof window !== 'undefined') {
-        console.log('Using localStorage to store directory');
-        const storageKey = `files_${userId}`;
-        let existingFiles = [];
-        
-        try {
-          existingFiles = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          console.log(`Found ${existingFiles.length} existing items in localStorage`);
-        } catch (e) {
-          console.warn('Error parsing localStorage, resetting:', e);
-        }
-        
-        // Create directory record
-        const directoryRecord: FileRecord = {
-          id: Math.random().toString(36).substring(2, 15),
-          name: name,
-          type: 'directory',
-          size: 0,
-          storage_path: storagePath,
-          user_id: userId,
-          directory_path: parentPath,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        
-        console.log('New directory record:', directoryRecord);
-        
-        // Add to localStorage
-        localStorage.setItem(storageKey, JSON.stringify([...existingFiles, directoryRecord]));
-        console.log('Updated localStorage with new directory');
-        
-        // Dispatch event to update UI immediately
-        setTimeout(() => {
-          console.log('Dispatching directory-created event');
-          const event = new CustomEvent('directory-created', { detail: directoryRecord });
-          window.dispatchEvent(event);
-        }, 0);
-        
-        console.log('==== CREATE DIRECTORY COMPLETE ====');
-        return directoryRecord;
+      // Check if a directory with the same name already exists at this path for this user
+      const { data: existingDirs, error: checkError } = await supabase
+        .from('files')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('name', name)
+        .eq('directory_path', normalizedParentPath)
+        .eq('is_directory', true);
+
+      if (checkError) {
+        throw checkError;
       }
-      
-      console.log('==== CREATE DIRECTORY FAILED (non-browser) ====');
-      throw new Error('Cannot create directory in non-browser environment');
+
+      if (existingDirs && existingDirs.length > 0) {
+        throw new Error(`Directory '${name}' already exists here.`);
+      }
+
+      // Prepare the record for the 'files' table
+      const directoryRecord = {
+        name: name,
+        user_id: userId,
+        type: 'directory',
+        size: 0, // Directories don't have a size
+        storage_path: `${userId}${newDirectoryPath}`, // Full path including user ID
+        directory_path: normalizedParentPath === '/' ? '/' : normalizedParentPath, // Explicitly set to '/' for root
+        is_directory: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      // Insert the record into the 'files' table
+      const { data: insertData, error: insertError } = await supabase
+        .from('files')
+        .insert([directoryRecord])
+        .select(); // Select to get the inserted record back
+
+      if (insertError) {
+        throw insertError;
+      }
+
+      return insertData ? insertData[0] : null;
     } catch (error) {
-      console.error('==== CREATE DIRECTORY ERROR ====');
-      console.error('Error type:', typeof error);
-      console.error('Error details:', error);
-      if (error instanceof Error) {
-        console.error('Error message:', error.message);
-        console.error('Error stack:', error.stack);
-      } else {
-        console.error('Error JSON:', JSON.stringify(error));
-      }
       throw error;
     }
   },
 
   getFiles: async (userId: string, directoryPath: string = "/") => {
-    console.log('==== GET FILES START ====');
-    console.log('User ID:', userId);
-    console.log('Directory Path:', directoryPath);
-    
     try {
       // Try to get files from Supabase first
-      console.log('Attempting to get files from Supabase database');
-      try {
-        const { data, error } = await supabase
-          .from('files')
-          .select('*')
-          .eq('user_id', userId)
-          .neq('type', 'directory');
+      const { data, error } = await supabase
+        .from('files')
+        .select('*')
+        .eq('user_id', userId)
+        .neq('type', 'directory');
         
-        if (error) {
-          console.warn('Supabase query failed, falling back to localStorage:', error);
-          console.warn('Error details:', JSON.stringify(error));
-          throw error; // This will be caught in the outer try/catch
-        }
-        
-        console.log(`Found ${data.length} files in database`);
-        
-        // Filter files based on the directory path
-        const filteredFiles = data.filter(file => {
-          const path = file.storage_path;
-          
-          // Remove userId from the beginning
-          const pathWithoutUserId = path.replace(`${userId}/`, '');
-          
-          if (directoryPath === '/') {
-            // For root files, there should be no slashes in the path
-            return pathWithoutUserId.indexOf('/') === -1;
-          } else {
-            // For files in directories, the path should start with the directory path
-            // and have exactly one more directory level
-            const dirPathWithoutLeadingSlash = directoryPath.startsWith('/') 
-              ? directoryPath.substring(1) 
-              : directoryPath;
-              
-            return pathWithoutUserId.startsWith(dirPathWithoutLeadingSlash) && 
-                   pathWithoutUserId.replace(dirPathWithoutLeadingSlash, '').indexOf('/') === -1;
-          }
-        });
-        
-        console.log(`Filtered to ${filteredFiles.length} files in directory: ${directoryPath}`);
-        
-        // Add directory_path for compatibility
-        const mappedFiles = filteredFiles.map(file => ({
-          ...file,
-          directory_path: directoryPath
-        }));
-        
-        console.log('Successfully retrieved files from Supabase');
-        console.log('==== GET FILES COMPLETE ====');
-        return mappedFiles;
-      } catch (dbError) {
-        console.warn('Database query failed:', dbError);
-        // Continue to localStorage fallback
+      if (error) {
+        throw error;
       }
       
-      // Use localStorage as fallback
-      if (typeof window !== 'undefined') {
-        console.log('Using localStorage fallback to get files');
-        const storageKey = `files_${userId}`;
-        let files = [];
+      // Filter files based on the directory path
+      const filteredFiles = data.filter(file => {
+        const path = file.storage_path;
         
-        try {
-          files = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          console.log(`Found ${files.length} total files in localStorage`);
-        } catch (e) {
-          console.warn('Error parsing localStorage:', e);
-          return [];
+        // Remove userId from the beginning
+        const pathWithoutUserId = path.replace(`${userId}/`, '');
+        
+        if (directoryPath === '/') {
+          // For root files, there should be no slashes in the path
+          return pathWithoutUserId.indexOf('/') === -1;
+        } else {
+          // For files in directories, the path should start with the directory path
+          // and have exactly one more directory level
+          const dirPathWithoutLeadingSlash = directoryPath.startsWith('/') 
+            ? directoryPath.substring(1) 
+            : directoryPath;
+            
+          return pathWithoutUserId.startsWith(dirPathWithoutLeadingSlash) && 
+                 pathWithoutUserId.replace(dirPathWithoutLeadingSlash, '').indexOf('/') === -1;
         }
-        
-        // Filter files by directory path
-        const filteredFiles = files.filter((file: FileRecord) => {
-          const fileDirPath = file.directory_path || '/';
-          console.log(`Comparing file path: ${fileDirPath} with current path: ${directoryPath}`);
-          return fileDirPath === directoryPath;
-        }).filter((file: FileRecord) => file.type !== 'directory');
-        
-        console.log(`Returning ${filteredFiles.length} files for directory: ${directoryPath}`);
-        console.log('==== GET FILES COMPLETE (localStorage) ====');
-        return filteredFiles;
-      }
+      });
       
-      // Fallback to empty array
-      console.log('No localStorage available, returning empty array');
-      console.log('==== GET FILES COMPLETE ====');
-      return [];
+      // Add directory_path for compatibility
+      const mappedFiles = filteredFiles.map(file => ({
+        ...file,
+        directory_path: directoryPath
+      }));
+      
+      return mappedFiles;
     } catch (error) {
-      console.error('==== GET FILES ERROR ====');
-      console.error('Error details:', error);
       return [];
     }
   },
 
   getDirectories: async (userId: string, directoryPath: string = "/") => {
-    console.log('==== GET DIRECTORIES START ====');
-    console.log('User ID:', userId);
-    console.log('Directory Path:', directoryPath);
-    
+    // Normalize the directory path
+    const normalizedPath = directoryPath === '/' ? '/' : directoryPath.endsWith('/') ? directoryPath : `${directoryPath}/`;
+
     try {
-      // Try to get directories from Supabase first
-      console.log('Attempting to get directories from Supabase database');
-      try {
-        const { data, error } = await supabase
-          .from('files')
-          .select('*')
-          .eq('user_id', userId)
-          .eq('type', 'directory');
-        
-        if (error) {
-          console.warn('Supabase query failed, falling back to localStorage:', error);
-          console.warn('Error details:', JSON.stringify(error));
-          throw error; // This will be caught in the outer try/catch
-        }
-        
-        console.log(`Found ${data.length} directories in database`);
-        
-        // Filter directories based on the parent path
-        const filteredDirs = data.filter(dir => {
-          const path = dir.storage_path;
-          
-          // Remove userId from the beginning
-          const pathWithoutUserId = path.replace(`${userId}/`, '');
-          
-          if (directoryPath === '/') {
-            // For root directories, there should be only one slash (at the end)
-            return pathWithoutUserId.split('/').length === 2;
-          } else {
-            // For nested directories, the path should start with the parent path
-            // and have exactly one more directory level
-            const parentPathWithoutLeadingSlash = directoryPath.startsWith('/') 
-              ? directoryPath.substring(1) 
-              : directoryPath;
-              
-            return pathWithoutUserId.startsWith(parentPathWithoutLeadingSlash) && 
-                   pathWithoutUserId.replace(parentPathWithoutLeadingSlash, '').split('/').length === 2;
+      // Try to get directories from Supabase
+      const { data: directories, error } = await supabase
+        .from('files')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_directory', true)
+        .order('name', { ascending: true });
+
+      if (error) {
+        throw error;
+      }
+
+      if (directories && directories.length > 0) {
+        // Filter directories to only include those in the current path
+        const filteredDirs = directories.filter(dir => {
+          // For root path, check if directory_path is '/' or empty or null
+          if (normalizedPath === '/') {
+            return dir.directory_path === '/' || dir.directory_path === '' || dir.directory_path === null;
           }
+          
+          // For non-root paths, match the directory_path exactly
+          return dir.directory_path === normalizedPath;
         });
         
-        console.log(`Filtered to ${filteredDirs.length} directories in parent path: ${directoryPath}`);
-        
-        // Map to DirectoryRecord format
-        const mappedDirs = filteredDirs.map(dir => ({
-          ...dir,
-          path: directoryPath,
-          parent_path: directoryPath
-        }));
-        
-        console.log('Successfully retrieved directories from Supabase');
-        console.log('==== GET DIRECTORIES COMPLETE ====');
-        return mappedDirs;
-      } catch (dbError) {
-        console.warn('Database query failed:', dbError);
-        // Continue to localStorage fallback
+        return filteredDirs;
+      } else {
+        return [];
       }
-      
-      // Use localStorage as fallback
+    } catch (dbError) {
+      // Use localStorage fallback if we're in a browser environment
       if (typeof window !== 'undefined') {
-        console.log('Using localStorage fallback to get directories');
-        const storageKey = `files_${userId}`;
-        let files = [];
-        
         try {
-          files = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          console.log(`Found ${files.length} total items in localStorage`);
-        } catch (e) {
-          console.warn('Error parsing localStorage:', e);
+          const storageKey = `files_${userId}`;
+          const allFiles = JSON.parse(localStorage.getItem(storageKey) || '[]');
+          
+          // Filter to only include directories
+          const directories = allFiles.filter((file: FileRecord) => file.is_directory === true);
+          
+          // Filter directories to only include those in the current path
+          const filteredDirectories = directories.filter((dir: FileRecord) => {
+            const dirPath = dir.directory_path || '/';
+            return dirPath === directoryPath;
+          });
+          
+          return filteredDirectories;
+        } catch (localError) {
           return [];
         }
-        
-        // Filter for directories in the current path
-        const directories = files.filter((file: FileRecord) => {
-          const fileDirPath = file.directory_path || '/';
-          console.log(`Comparing directory path: ${fileDirPath} with current path: ${directoryPath}`);
-          return fileDirPath === directoryPath && file.type === 'directory';
-        });
-        
-        // Map to DirectoryRecord format
-        const mappedDirectories = directories.map((dir: FileRecord) => {
-          return {
-            id: dir.id,
-            name: dir.name,
-            path: dir.directory_path || '/',
-            storage_path: dir.storage_path,
-            user_id: dir.user_id,
-            created_at: dir.created_at,
-            updated_at: dir.updated_at
-          } as DirectoryRecord;
-        });
-        
-        console.log(`Returning ${mappedDirectories.length} directories for path: ${directoryPath}`);
-        console.log('==== GET DIRECTORIES COMPLETE (localStorage) ====');
-        return mappedDirectories;
       }
       
-      // Fallback to empty array
-      console.log('No localStorage available, returning empty array');
-      console.log('==== GET DIRECTORIES COMPLETE ====');
-      return [];
-    } catch (error) {
-      console.error('==== GET DIRECTORIES ERROR ====');
-      console.error('Error details:', error);
       return [];
     }
   },
 
   deleteDirectory: async (directoryId: string, userId: string) => {
     try {
-      // First, try to delete from the database
-      try {
-        // First, get the directory to delete
-        const { data: directory, error: dirError } = await supabase
-          .from('files')
-          .select('*')
-          .eq('id', directoryId)
-          .eq('user_id', userId)
-          .eq('type', 'directory')
-          .single();
-        
-        if (dirError) throw dirError;
-        
+      // Get the directory to delete
+      const { data: directory, error: dirError } = await supabase
+        .from('files')
+        .select('*')
+        .eq('id', directoryId)
+        .eq('user_id', userId)
+        .eq('is_directory', true)
+        .single();
+
+      if (dirError) throw dirError;
+
+      if (!directory) {
+        throw new Error('Directory not found');
+      }
+
+      // Get all files in this directory
+      const { data: files, error: filesError } = await supabase
+        .from('files')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('directory_path', directory.storage_path)
+        .eq('is_directory', false);
+
+      if (filesError) throw filesError;
+
+      if (files && files.length > 0) {
         // Delete all files in this directory
-        const { data: files, error: filesError } = await supabase
-          .from('files')
-          .select('*')
-          .eq('user_id', userId)
-          .like('storage_path', `${directory.storage_path}%`)
-        
-        if (filesError) throw filesError
-        
-        // Delete files from storage and database
-        if (files && files.length > 0) {
+        for (const file of files) {
           // Delete from storage
-          const filePaths = files.map(file => file.storage_path)
           const { error: storageError } = await supabase.storage
             .from('files')
-            .remove(filePaths)
-          
-          if (storageError) throw storageError
-          
-          // Delete from database
-          const fileIds = files.map(file => file.id)
-          const { error: dbError } = await supabase
-            .from('files')
-            .delete()
-            .in('id', fileIds)
-          
-          if (dbError) throw dbError
-        }
-        
-        // Delete subdirectories recursively
-        const { data: subdirs, error: subdirsError } = await supabase
-          .from('files')
-          .select('*')
-          .eq('user_id', userId)
-          .eq('type', 'directory')
-          .like('storage_path', `${directory.storage_path}%`)
-        
-        if (subdirsError) throw subdirsError
-        
-        if (subdirs && subdirs.length > 0) {
-          // Use a for...of loop for async operations
-          for (const subdir of subdirs) {
-            // Call this function recursively using the exported object
-            await filesObj.deleteDirectory(subdir.id, userId)
+            .remove([file.storage_path]);
+
+          if (storageError) {
+            // Continue with deletion even if storage deletion fails
           }
-        } else if (subdirs === null) {
-          console.log('No subdirectories found')
         }
-        
-        // Finally, delete the directory itself
-        const { error: deleteError } = await supabase
+
+        // Delete all files in this directory from the database
+        const { error: deleteFilesError } = await supabase
           .from('files')
           .delete()
-          .eq('id', directoryId)
           .eq('user_id', userId)
-          .eq('type', 'directory')
-        
-        if (deleteError) throw deleteError
-        
-        return true
-      } catch (dbError) {
-        console.warn('Using localStorage fallback for directory deletion:', dbError);
-        
-        // Use localStorage fallback if we're in a browser environment
-        if (typeof window !== 'undefined') {
-          const storageKey = `directories_${userId}`;
-          const existingDirs = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          
-          // Get the directory to delete
-          const directory = existingDirs.find((dir: any) => dir.id === directoryId);
-          
-          if (!directory) {
-            throw new Error('Directory not found');
-          }
-          
-          // Find and delete all subdirectories recursively
-          const subdirIds = existingDirs
-            .filter((dir: any) => dir.parent_path.startsWith(directory.path))
-            .map((dir: any) => dir.id);
-          
-          // Delete all directories (including subdirectories)
-          const updatedDirs = existingDirs.filter((dir: any) => 
-            dir.id !== directoryId && !subdirIds.includes(dir.id)
-          );
-          
-          localStorage.setItem(storageKey, JSON.stringify(updatedDirs));
-          
-          // Also update the UI to show the deletion immediately
-          setTimeout(() => {
-            const event = new CustomEvent('directory-deleted', { detail: { id: directoryId } });
-            window.dispatchEvent(event);
-          }, 0);
-          
-          return true;
-        }
-        
-        throw new Error('Cannot delete directory: directories table does not exist and localStorage is not available');
+          .eq('directory_path', directory.storage_path)
+          .eq('is_directory', false);
+
+        if (deleteFilesError) throw deleteFilesError;
+      } else {
       }
+
+      // Get all subdirectories
+      const { data: subdirs, error: subdirsError } = await supabase
+        .from('files')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_directory', true)
+        .like('storage_path', `${directory.storage_path}%`);
+
+      if (subdirsError) throw subdirsError;
+
+      if (subdirs && subdirs.length > 0) {
+        // Use a for...of loop for async operations
+        for (const subdir of subdirs) {
+          // Call this function recursively using the exported object
+          await filesObj.deleteDirectory(subdir.id, userId);
+        }
+      } else if (subdirs === null) {
+      }
+
+      // Finally, delete the directory itself
+      const { error: deleteError } = await supabase
+        .from('files')
+        .delete()
+        .eq('id', directoryId)
+        .eq('user_id', userId)
+        .eq('is_directory', true);
+
+      if (deleteError) throw deleteError;
+
+      return true;
     } catch (error) {
-      console.error('Error deleting directory:', error);
       throw error;
     }
   },
 
   renameDirectory: async (directoryId: string, newName: string, userId: string) => {
     try {
-      console.log('Renaming directory:', { directoryId, newName, userId });
-      
       // Sanitize directory name
       const sanitizedName = newName.replace(/[^a-zA-Z0-9-_]/g, '_');
       
@@ -626,7 +431,7 @@ const filesObj = {
           .select('*')
           .eq('id', directoryId)
           .eq('user_id', userId)
-          .eq('type', 'directory')
+          .eq('is_directory', true)
           .single();
         
         if (dirError) throw dirError;
@@ -647,7 +452,7 @@ const filesObj = {
           })
           .eq('id', directoryId)
           .eq('user_id', userId)
-          .eq('type', 'directory')
+          .eq('is_directory', true)
           .select()
           .single();
         
@@ -659,7 +464,7 @@ const filesObj = {
           .from('files')
           .select('*')
           .eq('user_id', userId)
-          .eq('type', 'directory')
+          .eq('is_directory', true)
           .like('storage_path', `${oldPath}%`);
         
         if (subdirsError) throw subdirsError;
@@ -677,7 +482,7 @@ const filesObj = {
               })
               .eq('id', subdir.id)
               .eq('user_id', userId)
-              .eq('type', 'directory');
+              .eq('is_directory', true);
           }
         }
         
@@ -697,8 +502,6 @@ const filesObj = {
         
         return data;
       } catch (dbError) {
-        console.warn('Using localStorage fallback for directory renaming:', dbError);
-        
         // Use localStorage fallback if we're in a browser environment
         if (typeof window !== 'undefined') {
           const storageKey = `directories_${userId}`;
@@ -755,7 +558,6 @@ const filesObj = {
         throw new Error('Cannot rename directory: directories table does not exist and localStorage is not available');
       }
     } catch (error) {
-      console.error('Directory renaming error:', error);
       throw error;
     }
   },
@@ -825,6 +627,7 @@ const filesObj = {
         .select('*')
         .in('id', fileIds)
         .eq('user_id', userId)
+        .eq('is_directory', false);
       
       if (filesError) throw filesError
       
@@ -838,7 +641,9 @@ const filesObj = {
           if (error) throw error
           
           // Add to ZIP with relative path
-          zip.file(`${file.storage_path.replace(`${userId}${currentPath}`, '')}`, data)
+          const relativePath = file.storage_path.replace(`${userId}${currentPath}`, '').replace(/^\/+/, '');
+          const zipEntryPath = currentPath === "/" ? relativePath : `${currentPath}/${relativePath}`;
+          zip.file(zipEntryPath, data)
         }
       }
     }
@@ -852,7 +657,7 @@ const filesObj = {
           .select('*')
           .eq('id', dirId)
           .eq('user_id', userId)
-          .eq('type', 'directory')
+          .eq('is_directory', true)
           .single()
         
         if (dirError) throw dirError
@@ -865,7 +670,8 @@ const filesObj = {
           .from('files')
           .select('*')
           .eq('user_id', userId)
-          .like('storage_path', `${directory.storage_path}%`)
+          .eq('is_directory', false)
+          .like('storage_path', `${directory.storage_path}%`);
         
         if (filesError) throw filesError
         
@@ -879,7 +685,9 @@ const filesObj = {
             if (error) throw error
             
             // Add to ZIP with relative path
-            zip.file(`${dirName}/${file.storage_path.replace(directory.storage_path, '')}`, data)
+            const relativePath = file.storage_path.replace(directory.storage_path, '').replace(/^\/+/, '');
+            const zipEntryPath = directory.storage_path === `${userId}/` ? relativePath : `${dirName}/${relativePath}`;
+            zip.file(zipEntryPath, data)
           }
         }
         
@@ -888,16 +696,19 @@ const filesObj = {
           .from('files')
           .select('*')
           .eq('user_id', userId)
-          .eq('type', 'directory')
-          .like('storage_path', `${directory.storage_path}%`)
+          .eq('is_directory', true)
+          .like('storage_path', `${directory.storage_path}%`);
         
         if (subdirsError) throw subdirsError
         
         if (subdirs && subdirs.length > 0) {
           // Create empty folders for each subdirectory
           for (const subdir of subdirs) {
-            const relativePath = subdir.storage_path.replace(directory.storage_path, '')
-            zip.folder(`${dirName}/${relativePath}`)
+            const relativePath = subdir.storage_path.replace(directory.storage_path, '').replace(/^\/+/, '').replace(/\/+$/, '');
+            if (relativePath) { // Don't create folder for the directory itself
+              const zipFolderPath = directory.storage_path === `${userId}/` ? relativePath : `${dirName}/${relativePath}`;
+              zip.folder(zipFolderPath);
+            }
           }
         }
       }
@@ -912,12 +723,8 @@ const filesObj = {
   
   // Dashboard functions
   getStorageUsage: async (userId: string) => {
-    console.log('==== GET STORAGE USAGE START ====');
-    console.log('User ID:', userId);
-    
     try {
       // Get all files for the user
-      console.log('Attempting to get files from Supabase database');
       const { data, error } = await supabase
         .from('files')
         .select('*')
@@ -925,68 +732,6 @@ const filesObj = {
         .neq('type', 'directory');
         
       if (error) {
-        console.warn('Supabase query failed, falling back to localStorage:', error);
-        console.warn('Error details:', JSON.stringify(error));
-        
-        // Try localStorage as fallback
-        if (typeof window !== 'undefined') {
-          console.log('Using localStorage fallback to calculate storage usage');
-          const storageKey = `files_${userId}`;
-          let files = [];
-          
-          try {
-            files = JSON.parse(localStorage.getItem(storageKey) || '[]');
-            console.log(`Found ${files.length} total files in localStorage`);
-          } catch (e) {
-            console.warn('Error parsing localStorage:', e);
-            return {
-              total: 100, // GB
-              used: 0,
-              breakdown: []
-            };
-          }
-          
-          // Filter out directories
-          const actualFiles = files.filter((file: FileRecord) => file.type !== 'directory');
-          
-          // Calculate total size
-          const totalSizeBytes = actualFiles.reduce((total: number, file: FileRecord) => total + file.size, 0);
-          const totalSizeGB = totalSizeBytes / (1024 * 1024 * 1024);
-          
-          // Group files by type
-          const fileTypes = {
-            "Documents": ["pdf", "doc", "docx", "txt", "rtf", "odt", "xls", "xlsx", "ppt", "pptx"],
-            "Images": ["jpg", "jpeg", "png", "gif", "bmp", "svg", "webp"],
-            "Audio": ["mp3", "wav", "ogg", "flac", "aac", "m4a"],
-            "Video": ["mp4", "avi", "mov", "wmv", "flv", "webm", "mkv"],
-            "Archives": ["zip", "rar", "7z", "tar", "gz"]
-          };
-          
-          const breakdown = Object.entries(fileTypes).map(([type, extensions]) => {
-            const typeFiles = actualFiles.filter((file: FileRecord) => {
-              const ext = file.name.split('.').pop()?.toLowerCase() || '';
-              return extensions.includes(ext);
-            });
-            
-            const typeSizeBytes = typeFiles.reduce((total: number, file: FileRecord) => total + file.size, 0);
-            const typeSizeGB = typeSizeBytes / (1024 * 1024 * 1024);
-            
-            return {
-              type,
-              size: typeSizeGB
-            };
-          });
-          
-          console.log('Storage usage calculated from localStorage');
-          console.log('==== GET STORAGE USAGE COMPLETE ====');
-          
-          return {
-            total: 100, // GB
-            used: totalSizeGB,
-            breakdown
-          };
-        }
-        
         throw error;
       }
       
@@ -1018,18 +763,12 @@ const filesObj = {
         };
       });
       
-      console.log('Storage usage calculated from Supabase');
-      console.log('==== GET STORAGE USAGE COMPLETE ====');
-      
       return {
         total: 100, // GB
         used: totalSizeGB,
         breakdown
       };
     } catch (error) {
-      console.error('==== GET STORAGE USAGE ERROR ====');
-      console.error('Error details:', error);
-      
       // Return default values on error
       return {
         total: 100, // GB
@@ -1040,68 +779,22 @@ const filesObj = {
   },
   
   getRecentFiles: async (userId: string, limit: number = 5) => {
-    console.log('==== GET RECENT FILES START ====');
-    console.log('User ID:', userId);
-    console.log('Limit:', limit);
-    
     try {
       // Try to get files from Supabase first
-      console.log('Attempting to get recent files from Supabase database');
-      try {
-        const { data, error } = await supabase
-          .from('files')
-          .select('*')
-          .eq('user_id', userId)
-          .neq('type', 'directory')
-          .order('updated_at', { ascending: false })
-          .limit(limit);
+      const { data, error } = await supabase
+        .from('files')
+        .select('*')
+        .eq('user_id', userId)
+        .neq('type', 'directory')
+        .order('updated_at', { ascending: false })
+        .limit(limit);
           
-        if (error) {
-          console.warn('Supabase query failed, falling back to localStorage:', error);
-          console.warn('Error details:', JSON.stringify(error));
-          throw error;
-        }
-        
-        console.log(`Found ${data.length} recent files`);
-        console.log('==== GET RECENT FILES COMPLETE ====');
-        return data;
-      } catch (dbError) {
-        console.warn('Database query failed:', dbError);
-        
-        // Use localStorage as fallback
-        if (typeof window !== 'undefined') {
-          console.log('Using localStorage fallback to get recent files');
-          const storageKey = `files_${userId}`;
-          let files = [];
-          
-          try {
-            files = JSON.parse(localStorage.getItem(storageKey) || '[]');
-            console.log(`Found ${files.length} total files in localStorage`);
-          } catch (e) {
-            console.warn('Error parsing localStorage:', e);
-            return [];
-          }
-          
-          // Filter out directories and sort by updated_at
-          const recentFiles = files
-            .filter((file: FileRecord) => file.type !== 'directory')
-            .sort((a: FileRecord, b: FileRecord) => {
-              return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-            })
-            .slice(0, limit);
-            
-          console.log(`Returning ${recentFiles.length} recent files`);
-          console.log('==== GET RECENT FILES COMPLETE (localStorage) ====');
-          return recentFiles;
-        }
-        
-        console.log('No localStorage available, returning empty array');
-        console.log('==== GET RECENT FILES COMPLETE ====');
-        return [];
+      if (error) {
+        throw error;
       }
+      
+      return data;
     } catch (error) {
-      console.error('==== GET RECENT FILES ERROR ====');
-      console.error('Error details:', error);
       return [];
     }
   },
@@ -1121,7 +814,7 @@ const filesObj = {
       .from('files')
       .select('*')
       .eq('user_id', userId)
-      .eq('type', 'directory')
+      .eq('is_directory', true)
     
     if (dirsError) throw dirsError
     
@@ -1186,14 +879,12 @@ const filesObj = {
             .download(file.storage_path)
           
           if (error) {
-            console.error(`Error downloading file ${file.name}:`, error)
             continue
           }
           
           // Add to ZIP with relative path
           zip.file(`${file.storage_path.replace(`${userId}/`, '')}`, data)
         } catch (err) {
-          console.error(`Error processing file ${file.name}:`, err)
           // Continue with other files
         }
       }
@@ -1227,9 +918,10 @@ export const sharing = {
       // Get file details
       const { data: fileData, error: fileError } = await supabase
         .from('files')
-        .select('name, type')
+        .select('name, type') // Select name and mime type
         .eq('id', shareData.fileId)
         .eq('user_id', userId)
+        .eq('is_directory', false) // Ensure it's a file
         .single();
       
       if (fileError) throw fileError;
@@ -1241,7 +933,7 @@ export const sharing = {
       const shareRecord = {
         id: shareId,
         user_id: userId,
-        file_id: shareData.fileId,
+        file_id: shareData.fileId, // This should be a UUID
         file_name: fileData.name,
         file_type: fileData.type,
         url: `${process.env.NEXT_PUBLIC_APP_URL || window.location.origin}/s/${shareId}`,
@@ -1261,8 +953,7 @@ export const sharing = {
       if (error) throw error;
       
       return data;
-    } catch (error) {
-      console.error('Error creating share:', error);
+    } catch (error: any) {
       throw error;
     }
   },
@@ -1283,8 +974,7 @@ export const sharing = {
       if (error) throw error;
       
       return data || [];
-    } catch (error) {
-      console.error('Error listing shares:', error);
+    } catch (error: any) {
       return [];
     }
   },
@@ -1307,7 +997,6 @@ export const sharing = {
       
       return true;
     } catch (error) {
-      console.error('Error deleting share:', error);
       throw error;
     }
   },
@@ -1321,16 +1010,15 @@ export const sharing = {
     try {
       const { data, error } = await supabase
         .from('files')
-        .select('id, name, type')
+        .select('id, name, type') // Select id, name, and mime type
         .eq('user_id', userId)
-        .neq('type', 'directory')
+        .eq('is_directory', false) // Filter for files only
         .order('name', { ascending: true });
       
       if (error) throw error;
       
       return data || [];
     } catch (error) {
-      console.error('Error getting shareable files:', error);
       return [];
     }
   },
@@ -1384,7 +1072,6 @@ export const sharing = {
       
       return { file: fileData, share: shareData };
     } catch (error) {
-      console.error('Error getting shared file:', error);
       throw error;
     }
   }
@@ -1436,201 +1123,61 @@ export const profile = {
   },
   
   getSettings: async (userId: string) => {
-    console.log('==== GET USER SETTINGS START ====');
-    console.log('User ID:', userId);
-    
     try {
       // Try to get settings from Supabase first
-      console.log('Attempting to get settings from Supabase database');
-      try {
-        const { data, error } = await supabase
-          .from('user_settings')
-          .select('*')
-          .eq('user_id', userId)
-          .single();
-          
-        if (error) {
-          console.warn('Supabase query failed, falling back to localStorage:', error);
-          console.warn('Error details:', JSON.stringify(error));
-          throw error;
-        }
-        
-        console.log('Settings retrieved successfully:', data);
-        console.log('==== GET USER SETTINGS COMPLETE ====');
-        return data;
-      } catch (dbError) {
-        console.warn('Database query failed:', dbError);
-        
-        // Use localStorage as fallback
-        if (typeof window !== 'undefined') {
-          console.log('Using localStorage fallback to get settings');
-          const storageKey = `settings_${userId}`;
-          let settings = null;
-          
-          try {
-            settings = JSON.parse(localStorage.getItem(storageKey) || 'null');
-            console.log('Settings from localStorage:', settings);
-          } catch (e) {
-            console.warn('Error parsing localStorage:', e);
-          }
-          
-          if (!settings) {
-            // Default settings
-            settings = {
-              user_id: userId,
-              theme: 'light',
-              automatic_backups: false,
-              backup_frequency: 'weekly',
-              backup_retention: 30,
-              notifications_enabled: true
-            };
-            
-            localStorage.setItem(storageKey, JSON.stringify(settings));
-            console.log('Created default settings in localStorage');
-          }
-          
-          console.log('==== GET USER SETTINGS COMPLETE (localStorage) ====');
-          return settings;
-        }
-        
-        console.log('No localStorage available, returning default settings');
-        console.log('==== GET USER SETTINGS COMPLETE ====');
-        
-        // Default settings
-        return {
-          user_id: userId,
-          theme: 'light',
-          automatic_backups: false,
-          backup_frequency: 'weekly',
-          backup_retention: 30,
-          notifications_enabled: true
-        };
-      }
-    } catch (error) {
-      console.error('==== GET USER SETTINGS ERROR ====');
-      console.error('Error details:', error);
-      
-      // Return default settings on error
-      return {
-        user_id: userId,
-        theme: 'light',
-        automatic_backups: false,
-        backup_frequency: 'weekly',
-        backup_retention: 30,
-        notifications_enabled: true
-      };
-    }
-  },
-  
-  updateSettings: async (userId: string, settings: any) => {
-    console.log('==== UPDATE USER SETTINGS START ====');
-    console.log('User ID:', userId);
-    console.log('Settings:', settings);
-    
-    try {
-      // Try to update settings in Supabase first
-      console.log('Attempting to update settings in Supabase database');
-      try {
-        const { data, error } = await supabase
-          .from('user_settings')
-          .upsert({
-            user_id: userId,
-            ...settings
-          })
-          .select()
-          .single();
-          
-        if (error) {
-          console.warn('Supabase update failed, falling back to localStorage:', error);
-          console.warn('Error details:', JSON.stringify(error));
-          throw error;
-        }
-        
-        console.log('Settings updated successfully:', data);
-        console.log('==== UPDATE USER SETTINGS COMPLETE ====');
-        return data;
-      } catch (dbError) {
-        console.warn('Database operation failed:', dbError);
-        
-        // Use localStorage as fallback
-        if (typeof window !== 'undefined') {
-          console.log('Using localStorage to update settings');
-          const storageKey = `settings_${userId}`;
-          
-          try {
-            const currentSettings = JSON.parse(localStorage.getItem(storageKey) || '{}');
-            const updatedSettings = { ...currentSettings, ...settings };
-            localStorage.setItem(storageKey, JSON.stringify(updatedSettings));
-            console.log('Updated settings in localStorage:', updatedSettings);
-            
-            console.log('==== UPDATE USER SETTINGS COMPLETE (localStorage) ====');
-            return updatedSettings;
-          } catch (e) {
-            console.warn('Error with localStorage:', e);
-            throw e;
-          }
-        }
-        
-        console.log('No localStorage available');
-        console.log('==== UPDATE USER SETTINGS COMPLETE ====');
-        throw new Error('Failed to update settings');
-      }
-    } catch (error) {
-      console.error('==== UPDATE USER SETTINGS ERROR ====');
-      console.error('Error details:', error);
-      throw error;
-    }
-  }
-}
-
-// Settings module for managing user preferences
-export const settings = {
-  /**
-   * Get user settings from Supabase
-   * @param userId User ID
-   * @returns User settings object or null if not found
-   */
-  async getUserSettings(userId: string) {
-    try {
       const { data, error } = await supabase
         .from('user_settings')
         .select('*')
         .eq('user_id', userId)
         .single();
-      
+          
       if (error) {
-        console.error('Error fetching user settings:', error);
-        return null;
+        throw error;
       }
       
-      return data;
-    } catch (error) {
-      console.error('Error in getUserSettings:', error);
-      return null;
+      // Convert snake_case from database to camelCase for JavaScript
+      return {
+        theme: data.theme || 'system',
+        notifications: data.notifications !== undefined ? data.notifications : true,
+        compressFiles: data.compress_files || false,
+      };
+    } catch (dbError) {
+      console.error('Error getting user settings:', dbError);
+      
+      // Default settings
+      return {
+        theme: 'system',
+        notifications: true,
+        compressFiles: false,
+      };
     }
   },
   
-  /**
-   * Update user settings in Supabase
-   * @param userId User ID
-   * @param settings Settings object to save
-   * @returns Success status
-   */
-  async updateUserSettings(userId: string, settings: any) {
+  updateSettings: async (userId: string, settings: any) => {
     try {
+      // Convert camelCase to snake_case for database
+      const dbSettings: Record<string, any> = {
+        user_id: userId,
+      };
+      
+      // Map JavaScript camelCase to database snake_case
+      if (settings.theme !== undefined) dbSettings.theme = settings.theme;
+      if (settings.notifications !== undefined) dbSettings.notifications = settings.notifications;
+      if (settings.compressFiles !== undefined) dbSettings.compress_files = settings.compressFiles;
+      
       // Check if settings already exist for this user
       const { data: existingSettings } = await supabase
         .from('user_settings')
         .select('id')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
       
       if (existingSettings) {
         // Update existing settings
         const { error } = await supabase
           .from('user_settings')
           .update({
-            ...settings,
+            ...dbSettings,
             updated_at: new Date().toISOString()
           })
           .eq('user_id', userId);
@@ -1641,8 +1188,7 @@ export const settings = {
         const { error } = await supabase
           .from('user_settings')
           .insert({
-            user_id: userId,
-            ...settings,
+            ...dbSettings,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           });
@@ -1652,7 +1198,6 @@ export const settings = {
       
       return true;
     } catch (error) {
-      console.error('Error updating user settings:', error);
       throw error;
     }
   }
@@ -1684,3 +1229,97 @@ function getMimeType(filename: string): string {
   
   return mimeTypes[ext] || 'application/octet-stream';
 }
+
+// Settings module for managing user preferences
+export const settings = {
+  /**
+   * Get user settings from Supabase
+   * @param userId User ID
+   * @returns User settings object or null if not found
+   */
+  getUserSettings: async (userId: string) => {
+    try {
+      // Try to get settings from Supabase first
+      const { data, error } = await supabase
+        .from('user_settings')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+          
+      if (error) {
+        throw error;
+      }
+      
+      // Convert snake_case from database to camelCase for JavaScript
+      return {
+        theme: data.theme || 'system',
+        notifications: data.notifications !== undefined ? data.notifications : true,
+        compressFiles: data.compress_files || false,
+      };
+    } catch (dbError) {
+      console.error('Error getting user settings:', dbError);
+      
+      // Default settings
+      return {
+        theme: 'system',
+        notifications: true,
+        compressFiles: false,
+      };
+    }
+  },
+  
+  /**
+   * Update user settings in Supabase
+   * @param userId User ID
+   * @param settings Settings object to save
+   * @returns Success status
+   */
+  updateUserSettings: async (userId: string, settings: any) => {
+    try {
+      // Convert camelCase to snake_case for database
+      const dbSettings: Record<string, any> = {
+        user_id: userId,
+      };
+      
+      // Map JavaScript camelCase to database snake_case
+      if (settings.theme !== undefined) dbSettings.theme = settings.theme;
+      if (settings.notifications !== undefined) dbSettings.notifications = settings.notifications;
+      if (settings.compressFiles !== undefined) dbSettings.compress_files = settings.compressFiles;
+      
+      // Check if settings already exist for this user
+      const { data: existingSettings } = await supabase
+        .from('user_settings')
+        .select('id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      
+      if (existingSettings) {
+        // Update existing settings
+        const { error } = await supabase
+          .from('user_settings')
+          .update({
+            ...dbSettings,
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId);
+        
+        if (error) throw error;
+      } else {
+        // Create new settings
+        const { error } = await supabase
+          .from('user_settings')
+          .insert({
+            ...dbSettings,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        
+        if (error) throw error;
+      }
+      
+      return true;
+    } catch (error) {
+      throw error;
+    }
+  }
+};

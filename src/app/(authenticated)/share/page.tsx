@@ -258,7 +258,6 @@ export default function SharePage() {
             <Button 
               onClick={handleCreateShareLink} 
               disabled={!selectedFile || isCreatingLink}
-              className="w-full"
             >
               {isCreatingLink ? (
                 <>

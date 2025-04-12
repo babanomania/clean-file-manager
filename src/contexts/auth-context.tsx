@@ -67,33 +67,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function checkUser() {
     try {
-      logAuthState('Checking current user session')
-      const { data: { session } } = await supabase.auth.getSession()
-      
+      logAuthState('Checking current user session - START')
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      logAuthState('Checking current user session - getSession FINISHED')
+
+      // Handle potential error from getSession
+      if (sessionError) {
+        logAuthState('Error fetching session', sessionError)
+        throw sessionError // Throw to be caught by outer catch
+      }
+
       if (session?.user) {
         logAuthState('User found in session', session.user.email)
         setUser(session.user)
-        
+
         // Only redirect if we're on the login page
-        if (window.location.pathname === '/login') {
+        if (typeof window !== 'undefined' && window.location.pathname === '/login') {
           logAuthState('Redirecting to file manager from session check')
           router.push('/file-manager')
         }
       } else {
         logAuthState('No user found in session')
         setUser(null)
-        
+
         // Only redirect to login if we're on a protected page
         const publicPaths = ['/login', '/', '/signup']
-        if (!publicPaths.includes(window.location.pathname)) {
+        if (typeof window !== 'undefined' && !publicPaths.includes(window.location.pathname)) {
           logAuthState('Redirecting to login from session check')
           router.push('/login')
         }
       }
     } catch (error) {
+      logAuthState('Error during checkUser', error)
       console.error('Error checking user:', error)
-      setUser(null)
+      setUser(null) // Ensure user is null on error
     } finally {
+      logAuthState('Setting loading to false')
       setLoading(false)
     }
   }

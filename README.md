@@ -125,15 +125,14 @@ This will create an admin user with:
 
 ## Known Issues & Todo
 
-The following items are known issues that need to be addressed:
+The following features are planned for future development:
 
-1. **RLS Policy Issues**: Fix Row Level Security (RLS) issues when uploading files to Supabase storage
-2. **Admin Operations**: Resolve "user not allowed" errors that occasionally occur during admin operations
-3. **Signup Flow**: Fix navigation issues where users aren't always redirected to the signup success page after registration
-4. **Error Handling**: Improve error handling for database operations to provide more meaningful feedback
-5. **Performance Optimization**: Optimize hybrid storage approach for better performance with large files
+1. **Kubernetes Support**: Add Kubernetes deployment configurations for container orchestration and scalability
+2. **Automatic Backups**: Implement scheduled automatic backups of user files and database content
+3. **Enhanced Security**: Further improve security measures for file sharing and storage
+4. **API Documentation**: Create comprehensive API documentation for integration with other services
 
-Contributions to address these issues are welcome!
+Contributions to implement these features are welcome!
 
 ## License
 
